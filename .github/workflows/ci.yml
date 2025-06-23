@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [18, 20]
+        python-version: ['3.9', '3.10', '3.11']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      - name: Lint frontend code
+        run: |
+          cd frontend
+          # Add linting when available
+          echo "Frontend linting - add ESLint or similar when configured"
+
+      - name: Lint backend code
+        run: |
+          cd backend
+          if [ -f ../.flake8 ]; then
+            pip install flake8
+            flake8 . --config=../.flake8
+          fi
+
+      - name: Run frontend tests
+        run: |
+          cd frontend
+          # Add test runner when tests are implemented
+          echo "Frontend tests - add 'npm test' when tests are available"
+
+      - name: Run backend tests
+        run: |
+          cd backend
+          # Add test runner when tests are implemented
+          echo "Backend tests - add 'pytest' when tests are available"
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+
+      - name: Test Docker build
+        run: |
+          # Test that Docker images can be built successfully
+          make docker-image
+
+  security:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run security audit for frontend
+        run: |
+          cd frontend
+          npm audit --audit-level=high
+
+      - name: Run security audit for backend
+        run: |
+          cd backend
+          pip install safety
+          safety check -r requirements.txt
