@@ -26,7 +26,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+          # Disable npm cache since we don't have a lock file
           cache: 'npm'
+          cache-dependency-path: '**/package.json'
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
