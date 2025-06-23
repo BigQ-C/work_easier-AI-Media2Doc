@@ -1,0 +1,131 @@
+name: Dependabot Auto-Merge
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+
+jobs:
+  dependabot-auto-merge:
+    runs-on: ubuntu-latest
+    if: github.actor == 'dependabot[bot]'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Wait for CI checks
+        uses: fountainhead/action-wait-for-check@v1.2.0
+        id: wait-for-ci
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          checkName: test
+          ref: ${{ github.event.pull_request.head.sha }}
+          timeoutSeconds: 1800
+          intervalSeconds: 30
+
+      - name: Wait for security checks
+        uses: fountainhead/action-wait-for-check@v1.2.0
+        id: wait-for-security
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          checkName: security
+          ref: ${{ github.event.pull_request.head.sha }}
+          timeoutSeconds: 1800
+          intervalSeconds: 30
+
+      - name: Check if PR is safe to auto-merge
+        id: check-pr
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_BODY="${{ github.event.pull_request.body }}"
+          
+          echo "PR Title: $PR_TITLE"
+          
+          # Only auto-merge patch and minor updates, not major updates
+          if echo "$PR_TITLE" | grep -E "bump.*from.*[0-9]+\.[0-9]+\.[0-9]+.*to.*[0-9]+\.[0-9]+\.[0-9]+" > /dev/null; then
+            # Extract version numbers
+            OLD_VERSION=$(echo "$PR_TITLE" | grep -oE "from [0-9]+\.[0-9]+\.[0-9]+" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+")
+            NEW_VERSION=$(echo "$PR_TITLE" | grep -oE "to [0-9]+\.[0-9]+\.[0-9]+" | grep -oE "[0-9]+\.[0-9]+\.[0-9]+")
+            
+            OLD_MAJOR=$(echo "$OLD_VERSION" | cut -d. -f1)
+            NEW_MAJOR=$(echo "$NEW_VERSION" | cut -d. -f1)
+            
+            if [ "$OLD_MAJOR" = "$NEW_MAJOR" ]; then
+              echo "safe_update=true" >> $GITHUB_OUTPUT
+              echo "This is a safe minor/patch update (major version unchanged)"
+            else
+              echo "safe_update=false" >> $GITHUB_OUTPUT
+              echo "This is a major version update - requires manual review"
+            fi
+          elif echo "$PR_TITLE" | grep -iE "(security|vulnerability|cve)" > /dev/null; then
+            echo "safe_update=true" >> $GITHUB_OUTPUT
+            echo "This is a security update - auto-merging"
+          else
+            echo "safe_update=false" >> $GITHUB_OUTPUT
+            echo "Cannot determine update type - requires manual review"
+          fi
+
+      - name: Check CI status
+        id: ci-status
+        run: |
+          if [ "${{ steps.wait-for-ci.outputs.conclusion }}" = "success" ] && [ "${{ steps.wait-for-security.outputs.conclusion }}" = "success" ]; then
+            echo "ci_passed=true" >> $GITHUB_OUTPUT
+            echo "All CI checks passed"
+          else
+            echo "ci_passed=false" >> $GITHUB_OUTPUT
+            echo "CI checks failed or timed out"
+          fi
+
+      - name: Auto-approve PR
+        if: steps.check-pr.outputs.safe_update == 'true' && steps.ci-status.outputs.ci_passed == 'true'
+        run: |
+          gh pr review ${{ github.event.pull_request.number }} --approve --body "✅ Auto-approved by Dependabot auto-merge workflow after successful CI checks"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge
+        if: steps.check-pr.outputs.safe_update == 'true' && steps.ci-status.outputs.ci_passed == 'true'
+        run: |
+          gh pr merge ${{ github.event.pull_request.number }} --auto --squash --delete-branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on successful auto-merge
+        if: steps.check-pr.outputs.safe_update == 'true' && steps.ci-status.outputs.ci_passed == 'true'
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --body "🤖 This Dependabot PR has been automatically approved and will be merged after all required checks pass.
+
+          **Auto-merge criteria met:**
+          - ✅ Created by Dependabot
+          - ✅ Safe update type (patch/minor or security)
+          - ✅ All CI checks passed
+          - ✅ All security checks passed"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on skipped auto-merge
+        if: steps.check-pr.outputs.safe_update != 'true' || steps.ci-status.outputs.ci_passed != 'true'
+        run: |
+          REASON=""
+          if [ "${{ steps.check-pr.outputs.safe_update }}" != "true" ]; then
+            REASON="$REASON\n- ❌ Update type requires manual review (major version or unknown type)"
+          fi
+          if [ "${{ steps.ci-status.outputs.ci_passed }}" != "true" ]; then
+            REASON="$REASON\n- ❌ CI checks failed or timed out"
+          fi
+          
+          gh pr comment ${{ github.event.pull_request.number }} --body "🤖 Dependabot auto-merge skipped for this PR.
+
+          **Reasons:**$REASON
+
+          This PR requires manual review and approval."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
